@@ -30,6 +30,8 @@ typedef struct httpmessage
     array_t* status;
     list_t* header;
     array_t* body;
+
+    struct parse_context* parse_context;
 } http_message_t;
 
 http_message_t* init_message();
@@ -48,10 +50,6 @@ struct connection {
     uint16_t raw_bufsize;
     char* raw_buffer;
 
-    enum current_mode { REQUEST_MODE=0, RESPONSE_MODE } current_mode;
-
-    struct parse_context* parse_context;
-
     http_parser_settings req_setting;
     http_parser_settings resp_setting;
     http_parser *req_parser;
@@ -59,8 +57,10 @@ struct connection {
 
     worker_state curr_state;
 
-    http_message_t* req_message;
-    http_message_t* resp_message;
+    /* PRIVATE */
+    enum current_mode { REQUEST=0, RESPONSE } current_mode;
+    http_message_t* req_message;   // getting current message request or response
+    http_message_t* resp_message;  // handles via get_current_message(connection_t*)
 };
 
 int execute(connection_t* connection);
@@ -77,6 +77,9 @@ void close_connection(connection_t* conn);
 // domain is "domain_name:port" is there's only "domain_name" port'll be 80
 int connect_to(connection_t* conn, const char* domain);
 
-int message_raw(http_parser* parser, char** outbuf, size_t* outsize);
+int request_raw(http_parser* parser, char** outbuf, size_t* outsize);
+int response_raw(http_parser* parser, char** outbuf, size_t* outsize);
+
+http_message_t* get_current_message(connection_t* conn);
 
 #endif /* OS_PROXY_CONNECTION_H */

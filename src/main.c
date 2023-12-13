@@ -30,8 +30,23 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    connection_t* conn = init_connection();
-    connect_to(conn, "vk.com");
+    // array_t* arr = array_init(10);
+    // array_extend(arr, "helloworld", 10);
+    // for(int i = 0; i < arr->len; ++i){
+    //     printf("%c", arr->data[i]);
+    // }
+    // printf("|\n");
+
+    // array_extend(arr, "helloworld", 10);
+    // for(int i = 0; i < arr->len; ++i){
+    //     printf("%c", arr->data[i]);
+    // }
+    // printf("|\n");
+    // array_extend(arr, "world", 5);
+    // for(int i = 0; i < arr->len; ++i){
+    //     printf("%c", arr->data[i]);
+    // }
+    // printf("|\n");
 
     return 0;
 }

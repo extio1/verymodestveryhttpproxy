@@ -9,7 +9,10 @@ int body_store_cb(http_parser *parser, const char *p, size_t len);
 int req_complete_cb(http_parser* parser);
 int header_complete_cb(http_parser* parser);
 int on_url_cb(http_parser* parser, const char *at, size_t length);
+int on_chunk_header(http_parser* parser);
+int on_chunk_complete(http_parser* parser);
 
 int resp_complete_cb(http_parser* parser);
+int on_status_cb(http_parser* parser, const char *at, size_t length);
 
 #endif /* OS_PROXY_HTTP_CALLBACK */

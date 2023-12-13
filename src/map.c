@@ -11,7 +11,7 @@ list_entry_init(header_key_t key, header_value_t value)
     struct list_entry* en = malloc(sizeof(struct list_entry));
     en->key = key;
     en->value = value;
-    
+    en->next_entry = NULL;
     return en;
 }
 
@@ -29,6 +29,7 @@ list_append(list_t* list, header_key_t key, header_value_t value)
     struct list_entry* entry = list->first_entry; 
     if(list->first_entry == NULL){
         list->first_entry = list_entry_init(key, value);
+        list->first_entry->next_entry = NULL;
         return;
     }
     struct list_entry* next_entry = entry->next_entry;

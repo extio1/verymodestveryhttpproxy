@@ -26,10 +26,9 @@ init_connection()
     conn->raw_bufsize = WORKER_BUFFER_SIZE;
     conn->raw_buffer = malloc(conn->raw_bufsize*sizeof(char));
 
-    conn->parse_context = malloc(sizeof(struct parse_context));
-    conn->parse_context->last_header_callback = NONE;
-
+    conn->current_mode = REQUEST;
     conn->req_message = init_message();
+    conn->resp_message = init_message();
 
     conn->req_parser = malloc(sizeof(http_parser));
     conn->resp_parser = malloc(sizeof(http_parser));
@@ -38,22 +37,50 @@ init_connection()
 
     http_parser_init(conn->req_parser, HTTP_BOTH);
     http_parser_settings_init(&conn->req_setting);
-    // conn->req_parser.flags |= HTTP_PARSER_FLAG_SKIPBODY
+    // http general parse callbacks
     conn->req_setting.on_header_field = header_field_cb;
     conn->req_setting.on_header_value = header_value_cb;
     conn->req_setting.on_headers_complete = header_complete_cb;
     conn->req_setting.on_body = body_store_cb;
+    // conn->req_setting.on_chunk_complete = on_chunk_complete;
+    // conn->req_setting.on_chunk_header = on_chunk_header;
+    // specific
     conn->req_setting.on_url = on_url_cb;
     conn->req_setting.on_message_complete = req_complete_cb;
     conn->req_parser->data = conn;
+    conn->resp_setting.on_message_complete = resp_complete_cb;
 
     http_parser_init(conn->resp_parser, HTTP_RESPONSE);
     http_parser_settings_init(&conn->resp_setting);
+    // http general parse callbacks
+    conn->resp_setting.on_header_field = header_field_cb;
+    conn->resp_setting.on_header_value = header_value_cb;
+    conn->resp_setting.on_headers_complete = header_complete_cb;
+    conn->resp_setting.on_body = body_store_cb;
+    conn->resp_setting.on_chunk_complete = on_chunk_complete;
+    conn->resp_setting.on_chunk_header = on_chunk_header;
+    // specific
     conn->resp_setting.on_message_complete = resp_complete_cb;
+    conn->resp_setting.on_status = on_status_cb;
     conn->resp_parser->data = conn;
+    conn->resp_parser->flags |= F_SKIPBODY;
 
     conn->keep_alive = false;
     return conn;
+}
+
+http_message_t* 
+get_current_message(connection_t* conn)
+{
+    switch (conn->current_mode)
+    {
+    case REQUEST:
+        return conn->req_message;
+    case RESPONSE:
+        return conn->resp_message;
+    default:
+        return NULL;
+    }
 }
 
 void 
@@ -77,7 +104,11 @@ init_message()
     http_message_t* mess = malloc(sizeof(http_message_t));
 
     mess->header = list_init();
-    mess->body = NULL;
+    mess->body = array_init(0);
+
+    mess->parse_context = malloc(sizeof(struct parse_context));
+    mess->parse_context->last_header_callback = NONE;
+    
     mess->request = NULL;
     mess->status = NULL;
 
@@ -153,27 +184,60 @@ static int add_to_buffer_headers(list_t* list, char** outbuf, size_t* outsize);
 static int add_to_buffer_field(char** to, char* from, size_t* outsize, size_t len);
 static int add_to_buffer_value(char** to, char* from, size_t* outsize, size_t len);
 static int add_bytes_to_buffer(char **buffer, const char* src, size_t *buf_size, size_t src_size);
-static const char* raw_http_version(http_parser* parser);
+static const char* raw_http_version(const unsigned short http_major, const unsigned short http_minor);
 
 int 
-message_raw(http_parser* parser, char** outbuf, size_t* outsize)
+response_raw(http_parser* parser, char** outbuf, size_t* outsize)
+{
+    connection_t* conn = (connection_t*)parser->data;
+    http_message_t* message = (http_message_t*)conn->resp_message;
+    
+    char status_code[10];
+    sprintf(status_code, "%d", parser->status_code);
+    const char* http_ver = raw_http_version(parser->http_minor, parser->http_major);
+
+    *outbuf = NULL;
+    *outsize = 0;
+
+    add_bytes_to_buffer(outbuf, http_ver, outsize, strlen(http_ver));
+    add_bytes_to_buffer(outbuf, " ", outsize, 1);
+
+    add_bytes_to_buffer(outbuf, status_code, outsize, strlen(status_code));
+    add_bytes_to_buffer(outbuf, " ", outsize, 1);
+
+    add_bytes_to_buffer(outbuf, message->status->data, outsize, message->status->len);
+    add_bytes_to_buffer(outbuf, "\r\n", outsize, 2);
+
+    add_to_buffer_headers(message->header, outbuf, outsize);
+    
+    add_bytes_to_buffer(outbuf, "\r\n", outsize, 2);
+    
+    if(message->body != NULL)
+        add_bytes_to_buffer(outbuf, message->body->data, outsize, message->body->len);
+
+    return 0;
+}
+
+int 
+request_raw(http_parser* parser, char** outbuf, size_t* outsize)
 {
     connection_t* conn = (connection_t*)parser->data;
     http_message_t* message = (http_message_t*)conn->req_message;
     
+    const char* http_ver = raw_http_version(parser->http_minor, parser->http_major);
+    const char* method = http_method_str(parser->method);
+
     *outbuf = NULL;
     *outsize = 0;
 
-    const char* method = http_method_str(parser->method);
     add_bytes_to_buffer(outbuf, method, outsize, strlen(method));
     add_bytes_to_buffer(outbuf, " ", outsize, 1);
    
-    if(message->request != NULL){
-        add_bytes_to_buffer(outbuf, message->request->data, outsize, message->request->len);
-    } else if(message->status != NULL){
-        add_bytes_to_buffer(outbuf, message->status->data, outsize, message->status->len);
-    }
-    add_bytes_to_buffer(outbuf, raw_http_version(parser), outsize, 11);
+    add_bytes_to_buffer(outbuf, message->request->data, outsize, message->request->len);
+    
+    add_bytes_to_buffer(outbuf, " ", outsize, 1);
+    add_bytes_to_buffer(outbuf, http_ver, outsize, strlen(http_ver));
+    add_bytes_to_buffer(outbuf, "\r\n", outsize, 2);
 
     add_to_buffer_headers(message->header, outbuf, outsize);
     
@@ -246,11 +310,11 @@ add_to_buffer_value(char** to, char* from,
 }
 
 const char* 
-raw_http_version(http_parser* parser)
+raw_http_version(const unsigned short http_major, const unsigned short http_minor)
 {
-    if(parser->http_major > 0 && parser->http_minor > 0){
-        return " HTTP/1.1\r\n";
+    if(http_major > 0 && http_minor > 0){
+        return "HTTP/1.1";
     } else {
-        return " HTTP/1.0\r\n";
+        return "HTTP/1.0";
     }
 }

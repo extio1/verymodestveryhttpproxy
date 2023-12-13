@@ -17,6 +17,8 @@ resp_complete_cb(http_parser* parser)
     connection_t* conn = parser->data;
 
     conn->curr_state = resp_to_clt;
+    conn->current_mode = REQUEST;
+    conn->keep_alive = http_should_keep_alive(parser);
     return 0;
 }
 
@@ -24,7 +26,7 @@ int
 req_complete_cb(http_parser* parser)
 {
     connection_t* conn = parser->data;
-    http_message_t* currmess = conn->req_message;
+    http_message_t* currmess = get_current_message(conn);
     list_t* header = currmess->header;
 
     header_key_t host_domain = list_get(header, "Host");
@@ -36,6 +38,8 @@ req_complete_cb(http_parser* parser)
     }
     
     conn->curr_state = req_to_srv;
+    conn->current_mode = RESPONSE;
+    conn->keep_alive = http_should_keep_alive(parser);
     return 0;
 }
 
@@ -43,19 +47,38 @@ int
 header_complete_cb(http_parser* parser)
 {
     connection_t* conn = (connection_t*) parser->data;
-    struct parse_context *parse_context = conn->parse_context;
-    list_append(conn->req_message->header,      
+    http_message_t* currmess = get_current_message(conn);
+    struct parse_context *parse_context = currmess->parse_context;
+
+    list_append(currmess->header,      
                 parse_context->field_buffer, parse_context->value_buffer
     );
 
+    list_print(currmess->header);
+
     return 0;
+}
+
+int 
+on_status_cb(http_parser* parser, const char *at, size_t length)
+{
+    connection_t* conn = (connection_t*)parser->data;
+    http_message_t *currmess = get_current_message(conn);
+
+    if(currmess->status == NULL){
+        currmess->status = array_init(length);
+    }
+
+    array_extend(currmess->status, at, length);
+
+    return 0;   
 }
 
 int 
 on_url_cb(http_parser* parser, const char *at, size_t length)
 {
     connection_t* conn = (connection_t*)parser->data;
-    http_message_t *currmess = (http_message_t *)conn->req_message;
+    http_message_t *currmess = get_current_message(conn);
 
     if(currmess->request == NULL){
         currmess->request = array_init(length);
@@ -70,13 +93,50 @@ int
 body_store_cb(http_parser *parser, const char *p, size_t len)
 {
     connection_t* conn = (connection_t*) parser->data;
-    http_message_t* currmess = conn->req_message;
+    http_message_t* currmess = get_current_message(conn);
 
-    if(currmess->body == NULL){
-        currmess->body = array_init(len);
-    }
+    // printf("!!!!!!!!!!!!!!! BODY WRITED %ld!!!!!!!!!!!!!!!!!!!!\n", len);
+    // for(int i = 0; i < len; ++i){
+    //     printf("%d", p[i]);
+    // }
+    // printf("!!!!!!!!!!!!!!!%ld\n!!!!!!!!!!!!!!!!!!!!", len);
 
     if( array_extend(currmess->body, p, len) != 0 ){
+        log(ERROR, "array extending error");
+        return -1;
+    }
+
+    return 0;
+}
+
+int 
+on_chunk_header(http_parser* parser)
+{
+    connection_t* conn = (connection_t*) parser->data;
+    http_message_t* currmess = get_current_message(conn);
+    char chunk_size[100];
+
+    sprintf(chunk_size, "%lX", parser->content_length);
+    if( array_extend(currmess->body, chunk_size, strlen(chunk_size)) != 0 ){
+        log(ERROR, "array extending error");
+        return -1;
+    }
+
+    if( array_extend(currmess->body, "\r\n", 2) != 0 ){
+        log(ERROR, "array extending error");
+        return -1;
+    }
+
+    return 0;
+}
+
+int 
+on_chunk_complete(http_parser* parser)
+{
+    connection_t* conn = (connection_t*) parser->data;
+    http_message_t* currmess = get_current_message(conn);
+
+    if( array_extend(currmess->body, "\r\n", 2) != 0 ){
         log(ERROR, "array extending error");
         return -1;
     }
@@ -88,7 +148,8 @@ int
 header_field_cb(http_parser *parser, const char *p, size_t len)
 {
     connection_t* conn = (connection_t*) parser->data;
-    struct parse_context *parse_context = conn->parse_context;
+    http_message_t* currmess = get_current_message(conn);
+    struct parse_context *parse_context = currmess->parse_context;
 
     /*
      * Constructing header field string.
@@ -105,7 +166,7 @@ header_field_cb(http_parser *parser, const char *p, size_t len)
         }
     } else if (parse_context->last_header_callback == VALUE){ // new header started
         // append into header list
-        list_append(conn->req_message->header,      
+        list_append(currmess->header,      
                     parse_context->field_buffer, parse_context->value_buffer
         );
         //start new buffer
@@ -120,7 +181,8 @@ int
 header_value_cb(http_parser *parser, const char *p, size_t len)
 {
     connection_t* conn = (connection_t*) parser->data;
-    struct parse_context *parse_context = conn->parse_context;
+    http_message_t* currmess = get_current_message(conn);
+    struct parse_context *parse_context = currmess->parse_context;
     
     if(parse_context->last_header_callback == FIELD){ // value for current field started
         alloc_new_value_buffer(parse_context, p, len);
